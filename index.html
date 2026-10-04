@@ -289,9 +289,6 @@
             <div class="shade-name">Celeste</div>
             <div class="shade-sub">Globe</div>
           </div>
-            <div class="shade-name">Celeste</div>
-            <div class="shade-sub">Globe</div>
-          </div>
         </div>
       </div>
 
@@ -329,17 +326,12 @@
       <!-- Drop -->
       <div class="section">
         <div class="section-title">Drop Height</div>
-        <div class="field-label">Overall Drop</div>
-        <div class="toggle-group" id="drop-btns" style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;">
-          <button class="toggle-btn" data-drop="d18" style="padding:6px 4px;font-size:11px;">18"</button>
-          <button class="toggle-btn" data-drop="d24" style="padding:6px 4px;font-size:11px;">24"</button>
-          <button class="toggle-btn" data-drop="d30" style="padding:6px 4px;font-size:11px;">30"</button>
-          <button class="toggle-btn active" data-drop="d36" style="padding:6px 4px;font-size:11px;">36"</button>
-          <button class="toggle-btn" data-drop="d42" style="padding:6px 4px;font-size:11px;">42"</button>
-          <button class="toggle-btn" data-drop="d48" style="padding:6px 4px;font-size:11px;">48"</button>
-        </div>
-        <div style="font-size:9px;color:#8C7355;margin-top:6px;line-height:1.5">
-          Fixtures ship with 10ft of cord. Final drop is set by your electrician on site.
+        <div class="slider-wrap">
+          <div class="slider-row">
+            <input type="range" id="drop-slider" min="24" max="72" value="36"/>
+            <div class="slider-val"><span id="drop-val">36</span>"</div>
+          </div>
+          <div class="slider-range"><span>24" min</span><span>72" max</span></div>
         </div>
       </div>
 
@@ -385,18 +377,7 @@ const state = {
   frame: 'satin',
   puck: 'walnut',
   cord: 'beige',
-  drop: 'd36', // d18 | d24 | d30 | d36 | d42 | d48
-};
-
-// Drop offsets - ONLY moves shade groups, never touches cord/wire geometry
-// Increased values so movement is clearly visible
-const DROP_OFFSETS = {
-  d18:  6.0,   // 18" - move up most
-  d24:  4.0,   // 24"
-  d30:  2.0,   // 30"
-  d36:  0.0,   // 36" - default position
-  d42: -2.0,   // 42"
-  d48: -4.0,   // 48" - move down most
+  drop: 36,
 };
 
 // ── Texture definitions ──────────────────────────────────────────────────────
@@ -1079,40 +1060,57 @@ function showOnlyShade(root, activeShade) {
 // ── Drop height adjustment ────────────────────────────────────────────────────
 function initDropPositions(root) {
   if (dropInitialized) return;
-  // Store original Y positions of all non-cord children in shade groups
-  for (const group of Object.values(shadeGroups)) {
-    group.children.forEach(child => {
-      child.userData.origPosY = child.position.y;
-    });
+  // Store original positions/scales for all cord meshes
+  root.traverse(obj => {
+    if (!obj.isMesh) return;
+    const name = obj.name || '';
+    if (name.toLowerCase().includes('cord') && !name.includes('SWATCH')) {
+      obj.userData.origScaleY = obj.scale.y;
+      obj.userData.origPosY = obj.position.y;
+      obj.userData.isDrop = true;
+    }
+  });
+  // Store original Y for all shade groups
+  for (const obj of Object.values(shadeGroups)) {
+    obj.userData.origPosY = obj.position.y;
   }
   console.log('Drop initialized for', Object.keys(shadeGroups).length, 'shade groups');
   dropInitialized = true;
 }
 
-// Cord nodes INSIDE shade groups that must never move with drop
-const SHADE_CORD_NODES = new Set([
-  '2_Edmund_Cord_2_VEDMUND_CORD', '2_Classic_Cord_Beige',
-  '2_Dot_Cord', '2_Celeste_Cord', '2_Sarah_Cyl_Cord',
-  '2_Sarah_Cone_Cord', '2_Orb_Cord_VLAW_L_ORB', '2_Orb_Cord_VLAW_S_ORB',
-  '2_Satin_Brass_Cord_VLAW_L_BSB', '2_Satin_Brass_Cord_VLAW_S_BSB',
-  '2_Stella_Cord', '3S_Edmundcord_VEDMUND_CORD', '3S_Classic_Cord',
-  '3S_Dot_Cord', '3S_Celestecord', '3S_Sarah_Cyl_Cords',
-  '3S_Sarah_Cone_Cord', '3S_Stella_Cord',
-]);
-
-function applyDrop(root, dropPreset) {
+function applyDrop(root, dropInches) {
   if (!dropInitialized) initDropPositions(root);
-  const offset = DROP_OFFSETS[dropPreset] ?? 0;
 
-  // Move only non-cord children of each shade group
-  for (const group of Object.values(shadeGroups)) {
-    group.children.forEach(child => {
-      if (SHADE_CORD_NODES.has(child.name || '')) return; // skip cords
-      if (child.userData.origPosY === undefined) {
-        child.userData.origPosY = child.position.y;
+  const baseDrop = 36;
+  const ratio = dropInches / baseDrop;
+
+  // Scale all cord meshes
+  root.traverse(obj => {
+    if (!obj.isMesh) return;
+    if (obj.userData.isDrop && obj.userData.origScaleY !== undefined) {
+      obj.scale.y = obj.userData.origScaleY * ratio;
+    }
+  });
+
+  // Move shade groups: measure how far the model bounding box is tall
+  // and use that to calculate offset proportionally
+  if (Object.keys(shadeGroups).length > 0) {
+    // Get the active shade group to measure offset
+    const activeGroup = shadeGroups[state.shade];
+    if (activeGroup && activeGroup.userData.origPosY !== undefined) {
+      // Get current model height for scale reference
+      const box = new THREE.Box3().setFromObject(root);
+      const modelHeight = box.getSize(new THREE.Vector3()).y;
+      // 1 inch = modelHeight / total fixture height in inches (approx 80" total)
+      const unitsPerInch = modelHeight / 80;
+      const dropOffset = (dropInches - baseDrop) * unitsPerInch;
+
+      for (const obj of Object.values(shadeGroups)) {
+        if (obj.userData.origPosY !== undefined) {
+          obj.position.y = obj.userData.origPosY - dropOffset;
+        }
       }
-      child.position.y = child.userData.origPosY + offset;
-    });
+    }
   }
 }
 
@@ -1425,14 +1423,13 @@ document.querySelectorAll('[data-frame]').forEach(w => {
   });
 });
 
-// Drop preset buttons
-document.querySelectorAll('[data-drop]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-drop]').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.drop = btn.dataset.drop;
-    refreshScene();
-  });
+// Drop slider
+const dropSlider = document.getElementById('drop-slider');
+const dropVal = document.getElementById('drop-val');
+dropSlider.addEventListener('input', () => {
+  state.drop = +dropSlider.value;
+  dropVal.textContent = state.drop;
+  refreshScene();
 });
 
 // Build puck swatches
@@ -1537,453 +1534,8 @@ function updateSummary() {
   const puckLabel = PUCK_TEXTURES.find(p=>p.id===state.puck)?.label || '';
   const cordLabel = CORD_TEXTURES.find(c=>c.id===state.cord)?.label || '';
 
-  const dropLabels = { d18:'18" Drop', d24:'24" Drop', d30:'30" Drop', d36:'36" Drop', d42:'42" Drop', d48:'48" Drop' };
-  const dropLabel = dropLabels[state.drop] || 'Medium';
   document.getElementById('summary-text').innerHTML =
-    `${modelLabel}<br>${shadeLabel} · ${texLabel}<br>${frameLabel} · ${puckLabel} Puck<br>${cordLabel} Cord · ${dropLabel} Drop`;
-}
-
-// ── Init ──────────────────────────────────────────────────────────────────────
-updateSummary();
-
-// Try to load GLTF, fall back to canvas renderer
-try {
-  await switchModel('double');
-} catch(e) {
-  showInteractiveFallback();
-}
-</script>
-</body>
-</html>// Store original shade group positions once on load
-let dropInitialized = false;
-
-
-
-// ── Scene refresh ─────────────────────────────────────────────────────────────
-function refreshScene() {
-  if (!currentModel) return;
-  showOnlyShade(currentModel, state.shade);
-  applyMaterials(currentModel);
-  applyDrop(currentModel, state.drop);
-  updateSummary();
-
-  // Adjust camera target for Lawrence which has a longer natural drop
-  if (state.shade === 'LAWRENCE') {
-    controls.target.set(0, -3, 0);
-  } else {
-    controls.target.set(0, 0, 0);
-  }
-  controls.update();
-}
-
-// ── Load & swap model ─────────────────────────────────────────────────────────
-async function switchModel(modelKey) {
-  state.model = modelKey;
-  if (currentModel) {
-    scene.remove(currentModel);
-    currentModel = null;
-  }
-  shadeGroups = {}; // Reset on model switch
-  dropInitialized = false; // Reset drop on model switch
-  try {
-    const gltf = await loadModel(modelKey);
-    currentModel = gltf.scene;
-
-    // Scale up
-    currentModel.scale.set(15, 15, 15);
-    scene.add(currentModel);
-
-    // Get full bounding box
-    const fullBox = new THREE.Box3().setFromObject(currentModel);
-    const fullCenter = new THREE.Vector3();
-    const fullSize = new THREE.Vector3();
-    fullBox.getCenter(fullCenter);
-    fullBox.getSize(fullSize);
-
-    // Center model at origin using exact measured center
-    currentModel.position.set(-fullCenter.x, -fullCenter.y - 4, -fullCenter.z);
-
-    // Camera distance based on model height (tallest dimension)
-    const dist = fullSize.y * 1.4;
-    camera.position.set(0, 0, dist);
-    camera.near = 1;
-    camera.far = 10000;
-    camera.updateProjectionMatrix();
-
-    // Orbit target = exact visual center of model
-    controls.target.set(0, 0, 0);
-    controls.minPolarAngle = 0;
-    controls.maxPolarAngle = Math.PI;
-    controls.update();
-
-    // Log EVERY node name so we can see what Three.js actually calls them
-    console.log('--- ALL NODE NAMES ---');
-    currentModel.traverse(obj => {
-      if (obj.name && obj.name.length > 0) {
-        console.log(JSON.stringify(obj.name));
-      }
-    });
-    console.log('--- END NODE NAMES ---');
-
-    // Set correct shade tag map and subgroups based on model
-    SHADE_TAG_MAP = (modelKey === 'double') ? SHADE_TAG_MAP_DOUBLE : SHADE_TAG_MAP_TRIPLE;
-    CLASSIC_SUBGROUPS = (modelKey === 'double') ? CLASSIC_SUBGROUPS_DOUBLE : CLASSIC_SUBGROUPS_TRIPLE;
-    LAWRENCE_SUBGROUPS = (modelKey === 'double') ? LAWRENCE_SUBGROUPS_DOUBLE : LAWRENCE_SUBGROUPS_TRIPLE;
-
-    // Collect shade groups immediately after load
-    collectShadeGroups(currentModel);
-
-    // Hide swatch helper objects baked into the GLTF
-    currentModel.traverse(obj => {
-      if ((obj.name || '').includes('SWATCH')) obj.visible = false;
-    });
-
-    // Initialize drop positions NOW - before any shade toggling or refreshScene
-    // This captures true resting positions
-    initDropPositions(currentModel);
-
-    refreshScene();
-    modelLabel.textContent = modelKey === 'double' ? '2-Pendant Inline' : '3-Pendant Inline';
-  } catch (e) {
-    console.warn('Model load failed, using fallback:', e);
-    showInteractiveFallback();
-  }
-}
-
-// ── Fallback canvas renderer (when GLTF can't load) ──────────────────────────
-function startFallbackRenderer(canvas) {
-  const ctx = canvas.getContext('2d');
-  let rot = 0, dragging = false, lastX = 0, vel = 0;
-
-  function resize() {
-    canvas.width = canvas.offsetWidth * window.devicePixelRatio;
-    canvas.height = canvas.offsetHeight * window.devicePixelRatio;
-    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-  }
-  resize();
-  new ResizeObserver(resize).observe(canvas);
-
-  canvas.addEventListener('mousedown', e => { dragging = true; lastX = e.clientX; });
-  canvas.addEventListener('mousemove', e => { if (!dragging) return; const dx = e.clientX - lastX; rot += dx * 0.012; vel = dx * 0.012; lastX = e.clientX; });
-  canvas.addEventListener('mouseup', () => dragging = false);
-  canvas.addEventListener('mouseleave', () => dragging = false);
-
-  function getShadeColor() {
-    const opts = SHADE_OPTIONS[state.shade];
-    const found = opts?.textures.find(t => t.id === state.shadeTex);
-    return found?.color || '#8B6A3E';
-  }
-
-  function drawFrame(t) {
-    const W = canvas.offsetWidth, H = canvas.offsetHeight;
-    if (!dragging) { rot += 0.003 + vel * 0.03; vel *= 0.96; }
-
-    // BG
-    const bg = ctx.createLinearGradient(0,0,0,H);
-    bg.addColorStop(0,'#EDE8DE'); bg.addColorStop(1,'#E0D9CD');
-    ctx.fillStyle = bg; ctx.fillRect(0,0,W,H);
-
-    // Grid
-    ctx.strokeStyle = 'rgba(180,165,140,0.12)'; ctx.lineWidth = 1;
-    for (let x=0;x<W;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-    for (let y=0;y<H;y+=50){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
-
-    const cx = W/2, topY = 50;
-    const brassColor = state.frame === 'satin' ? '#C9A84C' : '#4A3018';
-    const puckFound = PUCK_TEXTURES.find(p=>p.id===state.puck);
-    const puckColor = puckFound?.id==='walnut'?'#3B2314':puckFound?.id==='clr_maple'?'#E8C98A':'#C8965A';
-    const shadeColor = getShadeColor();
-    const nPendants = state.model === 'double' ? 2 : 3;
-    const dropPx = 55 + (state.drop - 24) / 48 * 110;
-
-    // Canopy
-    ctx.save();
-    const cg = ctx.createRadialGradient(cx-4,topY-4,2,cx,topY,18);
-    cg.addColorStop(0,'rgba(255,255,255,0.6)'); cg.addColorStop(1,brassColor);
-    ctx.fillStyle = cg;
-    ctx.beginPath(); ctx.ellipse(cx,topY,18,7,0,0,Math.PI*2); ctx.fill();
-    ctx.restore();
-
-    // Puck
-    ctx.save();
-    const pg = ctx.createRadialGradient(cx-2,topY+12,1,cx,topY+14,9);
-    pg.addColorStop(0,'rgba(255,255,255,0.4)'); pg.addColorStop(1,puckColor);
-    ctx.fillStyle = pg;
-    ctx.beginPath(); ctx.ellipse(cx,topY+14,9,3.5,0,0,Math.PI*2); ctx.fill();
-    ctx.restore();
-
-    // Pendants
-    const spread = nPendants === 2 ? 60 : 80;
-    let positions = [];
-    for (let i=0;i<nPendants;i++){
-      const baseAngle = (i/nPendants)*Math.PI*2 + rot;
-      // inline
-      const x = (i - (nPendants-1)/2) * (spread/(nPendants-1||1));
-      const z = 0;
-      const sx = x * Math.cos(rot) - z * Math.sin(rot);
-      const sz = x * Math.sin(rot) + z * Math.cos(rot);
-      positions.push({sx,sz});
-    }
-    positions = positions.map((p,i)=>({...p,i})).sort((a,b)=>a.sz-b.sz);
-
-    positions.forEach(({sx,sz})=>{
-      const px = cx + sx;
-      const armY = topY + 20;
-      const cordY = armY + dropPx;
-      const depth = (sz+80)/160;
-      const scale = 0.7 + depth*0.5;
-      const alpha = 0.5 + depth*0.5;
-      ctx.globalAlpha = alpha;
-
-      // Arm
-      ctx.strokeStyle = brassColor; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(cx,topY+16); ctx.lineTo(px,armY); ctx.stroke();
-
-      // Cord
-      ctx.strokeStyle = '#8B7355'; ctx.lineWidth=1; ctx.setLineDash([2,3]);
-      ctx.beginPath(); ctx.moveTo(px,armY); ctx.lineTo(px,cordY); ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Shade
-      drawShadeShape(ctx, px, cordY, scale, shadeColor, state.shade, brassColor);
-
-      // Glow
-      const glow = ctx.createRadialGradient(px,cordY+25*scale,2,px,cordY+25*scale,35*scale);
-      glow.addColorStop(0,'rgba(255,220,120,0.2)'); glow.addColorStop(1,'rgba(255,220,120,0)');
-      ctx.fillStyle=glow;
-      ctx.beginPath();ctx.ellipse(px,cordY+25*scale,35*scale,18*scale,0,0,Math.PI*2);ctx.fill();
-
-      ctx.globalAlpha=1;
-    });
-
-    // Shadow on floor
-    positions.forEach(({sx,sz})=>{
-      const px=cx+sx, depth=(sz+80)/160, r=16+depth*10;
-      const sg=ctx.createRadialGradient(px,H-20,2,px,H-20,r);
-      sg.addColorStop(0,'rgba(80,50,20,0.15)');sg.addColorStop(1,'rgba(80,50,20,0)');
-      ctx.fillStyle=sg;ctx.beginPath();ctx.ellipse(px,H-20,r,r*0.25,0,0,Math.PI*2);ctx.fill();
-    });
-
-    ctx.fillStyle='rgba(100,80,55,0.4)';
-    ctx.font='10px Jost,sans-serif'; ctx.textAlign='center';
-    ctx.fillText('drag to rotate · connect files for 3D model', W/2, H-12);
-
-    requestAnimationFrame(drawFrame);
-  }
-  requestAnimationFrame(drawFrame);
-}
-
-function drawShadeShape(ctx, x, y, scale, hex, shade, brassColor) {
-  const w = 22*scale, h = 22*scale;
-  const lighten = (h,a) => { const r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16); return `rgb(${Math.min(255,r+a)},${Math.min(255,g+a)},${Math.min(255,b+a)})`; };
-  const darken  = (h,a) => { const r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16); return `rgb(${Math.max(0,r-a)},${Math.max(0,g-a)},${Math.max(0,b-a)})`; };
-
-  const grad = ctx.createLinearGradient(x-w,y,x+w,y+h);
-  grad.addColorStop(0,lighten(hex,40)); grad.addColorStop(.5,hex); grad.addColorStop(1,darken(hex,30));
-  ctx.fillStyle = grad; ctx.strokeStyle = darken(hex,35); ctx.lineWidth=1;
-
-  if (shade==='EDMUND') {
-    ctx.beginPath();ctx.moveTo(x-w,y);ctx.quadraticCurveTo(x-w*.9,y+h*.6,x,y+h*.65);ctx.quadraticCurveTo(x+w*.9,y+h*.6,x+w,y);ctx.fill();ctx.stroke();
-    const gr=9*scale, gg=ctx.createRadialGradient(x-gr*.3,y+h*.65+gr*.6,gr*.1,x,y+h*.65+gr,gr);
-    gg.addColorStop(0,'rgba(255,255,255,0.9)');gg.addColorStop(.7,'rgba(220,240,255,0.4)');gg.addColorStop(1,'rgba(180,200,220,0.1)');
-    ctx.beginPath();ctx.arc(x,y+h*.65+gr,gr,0,Math.PI*2);ctx.fillStyle=gg;ctx.fill();
-    ctx.strokeStyle='rgba(180,200,220,0.4)';ctx.lineWidth=.7;ctx.stroke();
-  } else if (shade==='CLASSIC') {
-    ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x-w*.55,y+h*.9);ctx.lineTo(x+w*.55,y+h*.9);ctx.closePath();ctx.fill();ctx.stroke();
-    const gg=ctx.createRadialGradient(x-gr*.3,y+h*.5,2,x,y+h*.5+8*scale,8*scale);
-    var gr=7*scale;gg.addColorStop(0,'rgba(255,255,255,0.9)');gg.addColorStop(1,'rgba(220,220,210,0.1)');
-    ctx.beginPath();ctx.arc(x,y-4*scale,5*scale,0,Math.PI*2);ctx.fillStyle='rgba(255,255,255,0.5)';ctx.fill();
-  } else if (shade==='LAWRENCE') {
-    ctx.strokeStyle=brassColor;ctx.lineWidth=2.5*scale;
-    ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+h*.6);ctx.stroke();
-    const gr=11*scale,gg=ctx.createRadialGradient(x-gr*.35,y+h*.6+gr*.6,gr*.1,x,y+h*.6+gr,gr);
-    gg.addColorStop(0,'rgba(255,255,255,0.95)');gg.addColorStop(.5,'rgba(240,240,230,0.6)');gg.addColorStop(1,'rgba(200,190,170,0.2)');
-    ctx.beginPath();ctx.arc(x,y+h*.6+gr,gr,0,Math.PI*2);ctx.fillStyle=gg;ctx.fill();
-    ctx.strokeStyle='rgba(200,185,150,0.4)';ctx.lineWidth=.8;ctx.stroke();
-  } else if (shade==='SARAH_CYL') {
-    ctx.beginPath();ctx.rect(x-w*.5,y,w,h*.9);ctx.fill();ctx.stroke();
-    ctx.beginPath();ctx.ellipse(x,y,w*.5,w*.15,0,0,Math.PI*2);ctx.fillStyle=lighten(hex,25);ctx.fill();ctx.stroke();
-    ctx.globalAlpha*=0.4;
-    for(let r=0;r<3;r++)for(let c=0;c<4;c++){ctx.beginPath();ctx.arc(x-w*.3+c*w*.2,y+h*.2+r*h*.22,1.5*scale,0,Math.PI*2);ctx.fillStyle='rgba(255,210,130,0.7)';ctx.fill();}
-    ctx.globalAlpha/=0.4;
-  } else if (shade==='DOT') {
-    ctx.beginPath();ctx.moveTo(x-w*.1,y+h*.05);ctx.lineTo(x-w*.5,y+h*.75);ctx.lineTo(x+w*.5,y+h*.75);ctx.lineTo(x+w*.1,y+h*.05);ctx.closePath();ctx.fill();ctx.stroke();
-    ctx.globalAlpha*=0.5;
-    for(let r=0;r<3;r++){const c=3-r;const rW=w*(.3-r*.07);for(let ci=0;ci<c;ci++){ctx.beginPath();ctx.arc(x-rW+ci*(rW*2/(c||1)),y+h*(.2+r*.2),1.5*scale,0,Math.PI*2);ctx.fillStyle='rgba(255,210,120,0.8)';ctx.fill();}}
-    ctx.globalAlpha/=0.5;
-  } else {
-    // Celeste / Stella - globe
-    const gr=11*scale,gg=ctx.createRadialGradient(x-gr*.35,y+gr*.4,gr*.1,x,y+gr,gr);
-    gg.addColorStop(0,'rgba(255,255,255,0.92)');gg.addColorStop(.5,'rgba(240,238,225,0.6)');gg.addColorStop(1,'rgba(200,195,175,0.15)');
-    ctx.beginPath();ctx.arc(x,y+gr,gr,0,Math.PI*2);ctx.fillStyle=gg;ctx.fill();
-    ctx.strokeStyle='rgba(200,185,150,0.4)';ctx.lineWidth=.8;ctx.stroke();
-  }
-}
-
-// ── Render loop ───────────────────────────────────────────────────────────────
-renderer.setAnimationLoop(() => {
-  controls.update();
-  renderer.render(scene, camera);
-});
-
-window.addEventListener('resize', () => {
-  camera.aspect = W() / H();
-  camera.updateProjectionMatrix();
-  renderer.setSize(W(), H());
-});
-
-// ── UI Wiring ─────────────────────────────────────────────────────────────────
-
-// Model buttons
-document.querySelectorAll('[data-model]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-model]').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    switchModel(btn.dataset.model);
-  });
-});
-
-// Shade buttons
-document.querySelectorAll('[data-shade]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-shade]').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.shade = btn.dataset.shade;
-    // Reset to first texture option
-    const opts = SHADE_OPTIONS[state.shade];
-    state.shadeTex = opts?.textures[0]?.id || '';
-    buildShadeSwatches();
-    refreshScene();
-  });
-});
-
-// Frame swatches
-document.querySelectorAll('[data-frame]').forEach(w => {
-  w.addEventListener('click', () => {
-    document.querySelectorAll('[data-frame] .swatch').forEach(s => s.classList.remove('active'));
-    document.querySelectorAll('[data-frame]').forEach(s => s.classList.remove('active'));
-    w.querySelector('.swatch').classList.add('active');
-    state.frame = w.dataset.frame;
-    refreshScene();
-  });
-});
-
-// Drop preset buttons
-document.querySelectorAll('[data-drop]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-drop]').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.drop = btn.dataset.drop;
-    refreshScene();
-  });
-});
-
-// Build puck swatches
-function buildSwatchRow(container, items, stateKey, onSelect) {
-  container.innerHTML = '';
-  items.forEach(item => {
-    const wrap = document.createElement('div');
-    wrap.className = 'swatch-wrap';
-    const swatch = document.createElement('div');
-    swatch.className = 'swatch' + (state[stateKey] === item.id ? ' active' : '');
-    if (item.file) {
-      swatch.style.backgroundImage = `url(${item.file})`;
-    } else if (item.color) {
-      swatch.style.backgroundColor = item.color;
-    }
-    const label = document.createElement('span');
-    label.textContent = item.label;
-    wrap.appendChild(swatch);
-    wrap.appendChild(label);
-    wrap.addEventListener('click', () => {
-      container.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
-      swatch.classList.add('active');
-      state[stateKey] = item.id;
-      onSelect();
-    });
-    container.appendChild(wrap);
-  });
-}
-
-buildSwatchRow(
-  document.getElementById('puck-swatches'),
-  PUCK_TEXTURES, 'puck', refreshScene
-);
-buildSwatchRow(
-  document.getElementById('cord-swatches'),
-  CORD_TEXTURES, 'cord', refreshScene
-);
-
-function buildShadeSwatches() {
-  const opts = SHADE_OPTIONS[state.shade];
-  const label = document.getElementById('shade-tex-label');
-  label.textContent = opts?.label || 'Finish';
-  const container = document.getElementById('shade-swatches');
-
-  if (state.shade === 'CLASSIC') {
-    // Show size buttons + finish swatches
-    container.innerHTML = '';
-    // Size buttons
-    const sizeDiv = document.createElement('div');
-    sizeDiv.style.cssText = 'display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px;width:100%';
-    opts.textures.forEach(t => {
-      const btn = document.createElement('button');
-      btn.className = 'toggle-btn' + (state.classicSize === t.id ? ' active' : '');
-      btn.textContent = t.label;
-      btn.style.cssText = 'flex:1;min-width:60px;font-size:10px;padding:5px 6px';
-      btn.addEventListener('click', () => {
-        state.classicSize = t.id;
-        buildShadeSwatches();
-        refreshScene();
-      });
-      sizeDiv.appendChild(btn);
-    });
-    container.appendChild(sizeDiv);
-    // Finish label + swatches
-    const finLabel = document.createElement('div');
-    finLabel.className = 'field-label';
-    finLabel.textContent = 'Steel Finish';
-    container.appendChild(finLabel);
-    const finRow = document.createElement('div');
-    finRow.className = 'swatch-row';
-    opts.finishes.forEach(f => {
-      const wrap = document.createElement('div');
-      wrap.className = 'swatch-wrap';
-      const sw = document.createElement('div');
-      sw.className = 'swatch' + (state.shadeTex === f.id ? ' active' : '');
-      sw.style.backgroundColor = f.color;
-      const lbl = document.createElement('span');
-      lbl.textContent = f.label;
-      wrap.appendChild(sw); wrap.appendChild(lbl);
-      wrap.addEventListener('click', () => {
-        container.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
-        sw.classList.add('active');
-        state.shadeTex = f.id;
-        refreshScene();
-      });
-      finRow.appendChild(wrap);
-    });
-    container.appendChild(finRow);
-  } else {
-    buildSwatchRow(container, opts?.textures || [], 'shadeTex', refreshScene);
-  }
-}
-buildShadeSwatches();
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-function updateSummary() {
-  const modelLabel = state.model === 'double' ? '2-Pendant Inline' : '3-Pendant Inline';
-  const shadeLabel = document.querySelector(`[data-shade="${state.shade}"] .shade-name`)?.textContent || state.shade;
-  const opts = SHADE_OPTIONS[state.shade];
-  const texLabel = opts?.textures.find(t=>t.id===state.shadeTex)?.label || '';
-  const frameLabel = state.frame === 'satin' ? 'Satin Brass' : 'Oil Rubbed Brass';
-  const puckLabel = PUCK_TEXTURES.find(p=>p.id===state.puck)?.label || '';
-  const cordLabel = CORD_TEXTURES.find(c=>c.id===state.cord)?.label || '';
-
-  const dropLabels = { d18:'18" Drop', d24:'24" Drop', d30:'30" Drop', d36:'36" Drop', d42:'42" Drop', d48:'48" Drop' };
-  const dropLabel = dropLabels[state.drop] || 'Medium';
-  document.getElementById('summary-text').innerHTML =
-    `${modelLabel}<br>${shadeLabel} · ${texLabel}<br>${frameLabel} · ${puckLabel} Puck<br>${cordLabel} Cord · ${dropLabel} Drop`;
+    `${modelLabel}<br>${shadeLabel} · ${texLabel}<br>${frameLabel} · ${puckLabel} Puck<br>${cordLabel} Cord · ${state.drop}" Drop`;
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
